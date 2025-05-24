@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""
+Hydroponic Cultivation System - Main Controller
+Raspberry Pi 4 Model B
+
+This is the main controller that:
+1. Reads sensor data from Arduino
+2. Sends data to ThingSpeak
+3. Controls actuators based on presets
+4. Monitors plant health using computer vision
+5. Provides web dashboard interface
+
+Authors: Yashwanth D, Pooja R, Keerthika M, G Prasanth, 
+         Gnanasudharsan A, Sandeep V
+Institution: Sri Sairam Engineering College, Chennai
+"""
+
+import json
+import time
+import threading
+import logging
+from datetime import datetime
+from typing import Dict, Any, Optional
+
+import serial
+import cv2
+import numpy as np
+from flask import Flask, render_template, jsonify, request
+import requests
+
+from sensor_reader import SensorReader
+from disease_detection import DiseaseDetector
+from thingspeak_client import ThingSpeakClient
+from preset_manager import PresetManager
+from actuator_controller import ActuatorController
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/var/log/hydroponic_system.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class HydroponicsController:
+    """Main controller class for the hydroponic system"""
+    
+    def __init__(self, config_file: str = 'config/config.py'):
+        """Initialize the hydroponic system controller"""
+        
+        self.config = self._load_config(config_file)
+        self.running = False
+        
+        # Initialize components
+        self.sensor_reader = SensorReader(
+            port=self.config.get('ARDUINO_PORT', '/dev/ttyUSB0'),
+            baudrate=self.config.get('ARDUINO_BAUDRATE', 9600)
+        )
+        
+        self.disease_detector = DiseaseDetector(
+            model_path=self.config.get('MODEL_PATH', 'models/disease_detection.pkl')
+        )
+        
+        self.thingspeak_client = ThingSpeakClient(
+            api_key=self.config.get('THINGSPEAK_API_KEY'),
+            channel_id=self.config.get('THINGSPEAK_CHANNEL_ID')
+        )
+        
+        self.preset_manager = PresetManager('presets/')
+        
+        self.actuator_controller = ActuatorController(self.sensor_reader)
+        
+        # Current system state
+        self.current_preset = None
+        self.sensor_data = {}
+        self.system_status = {
+            'pump': False,
+            'lights': False,
+            'ph_control': False,
+            'last_update': None
+        }
+        
+        # Flask app for web dashboard
+        self.app = Flask(__name__)
+        self._setup_routes()
+        
+        logger.info("Hydroponic system controller initialized")
+    
+    def _load_config(self, config_file: str) -> Dict[str, Any]:
+        """Load configuration from file"""
+        try:
+            with open(config_file, 'r') as f:
+                config = {}
+                exec(f.read(), config)
+                return config
+        except FileNotFoundError:
+            logger.warning(f"Config file {config_file} not found, using defaults")
+            return self._get_default_config()
+    
+    def _get_default_config(self) -> Dict[str, Any]:
+        """Get default configuration"""
+        return {
+            'ARDUINO_PORT': '/dev/ttyUSB0',
+            'ARDUINO_BAUDRATE': 9600,
+            'THINGSPEAK_API_KEY': 'YOUR_API_KEY',
+            'THINGSPEAK_CHANNEL_ID': 'YOUR_CHANNEL_ID',
+            'CAMERA_INDEX': 0,
+            'MODEL_PATH': 'models/disease_detection.pkl',
+            'DATA_LOG_INTERVAL': 10,
+            'CONTROL_LOOP_INTERVAL': 5
+        }
+    
+    def start(self):
+        """Start the hydroponic system"""
+        logger.info("Starting hydroponic system...")
+        
+        self.running = True
+        
+        # Start sensor reading thread
+        sensor_thread = threading.Thread(target=self._sensor_loop, daemon=True)
+        sensor_thread.start()
+        
+        # Start control loop thread
+        control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        control_thread.start()
+        
+        # Start disease detection thread
+        disease_thread = threading.Thread(target=self._disease_detection_loop, daemon=True)
+        disease_thread.start()
+        
+        # Start web server
+        web_thread = threading.Thread(
+            target=lambda: self.app.run(host='0.0.0.0', port=5000, debug=False),
+            daemon=True
+        )
+        web_thread.start()
+        
+        logger.info("All system threads started successfully")
+        
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.stop()
+    
+    def stop(self):
+        """Stop the hydroponic system"""
+        logger.info("Stopping hydroponic system...")
+        self.running = False
+        
+        # Turn off all actuators
+        self.actuator_controller.turn_off_all()
+        
+        # Close connections
+        self.sensor_reader.close()
+        
+        logger.info("Hydroponic system stopped")
+    
+    def _sensor_loop(self):
+        """Main sensor reading loop"""
+        while self.running:
+            try:
+                # Read sensor data from Arduino
+                data = self.sensor_reader.read_sensors()
+                if data:
+                    self.sensor_data = data
+                    self.sensor_data['timestamp'] = datetime.now().isoformat()
+                    
+                    # Log to ThingSpeak
+                    self._log_to_thingspeak(data)
+                    
+                    logger.debug(f"Sensor data: {data}")
+                
+                time.sleep(self.config.get('DATA_LOG_INTERVAL', 10))
+                
+            except Exception as e:
+                logger.error(f"Error in sensor loop: {e}")
+                time.sleep(5)
+    
+    def _control_loop(self):
+        """Main control loop for maintaining plant conditions"""
+        while self.running:
+            try:
+                if self.current_preset and self.sensor_data:
+                    self._maintain_conditions()
+                
+                time.sleep(self.config.get('CONTROL_LOOP_INTERVAL', 5))
+                
+            except Exception as e:
+                logger.error(f"Error in control loop: {e}")
+                time.sleep(5)
+    
+    def _disease_detection_loop(self):
+        """Disease detection loop using computer vision"""
+        camera_index = self.config.get('CAMERA_INDEX', 0)
+        cap = cv2.VideoCapture(camera_index)
+        
+        if not cap.isOpened():
+            logger.error("Could not open camera for disease detection")
+            return
+        
+        while self.running:
+            try:
+                ret, frame = cap.read()
+                if ret:
+                    # Analyze frame for diseases
+                    result = self.disease_detector.analyze_image(frame)
+                    
+                    if result['disease_detected']:
+                        self._handle_disease_alert(result)
+                
+                time.sleep(30)  # Check every 30 seconds
+                
+            except Exception as e:
+                logger.error(f"Error in disease detection loop: {e}")
+                time.sleep(10)
+        
+        cap.release()
+    
+    def _log_to_thingspeak(self, data: Dict[str, float]):
+        """Log sensor data to ThingSpeak"""
+        try:
+            fields = {
+                'field1': data.get('ph', 0),
+                'field2': data.get('tds', 0),
+                'field3': data.get('air_temp', 0),
+                'field4': data.get('humidity', 0),
+                'field5': data.get('solution_temp', 0)
+            }
+            
+            self.thingspeak_client.send_data(fields)
+            logger.debug("Data logged to ThingSpeak")
+            
+        except Exception as e:
+            logger.error(f"Error logging to ThingSpeak: {e}")
+    
+    def _maintain_conditions(self):
+        """Maintain optimal growing conditions based on preset"""
+        preset = self.current_preset
+        data = self.sensor_data
+        
+        # pH Control
+        ph = data.get('ph', 7.0)
+        if ph < preset['ph_range'][0]:
+            self.actuator_controller.adjust_ph_up()
+            logger.info(f"pH too low ({ph}), adding pH up solution")
+        elif ph > preset['ph_range'][1]:
+            self.actuator_controller.adjust_ph_down()
+            logger.info(f"pH too high ({ph}), adding pH down solution")
+        
+        # EC/TDS Control
+        tds = data.get('tds', 0)
+        if tds < preset['ec_range'][0] * 1000:  # Convert EC to TDS
+            self.actuator_controller.add_nutrients()
+            logger.info(f"TDS too low ({tds}), adding nutrients")
+        
+        # Temperature Control (informational - could control fans/heaters)
+        temp = data.get('air_temp', 20)
+        if temp < preset['temperature_range'][0]:
+            logger.warning(f"Temperature too low: {temp}°C")
+        elif temp > preset['temperature_range'][1]:
+            logger.warning(f"Temperature too high: {temp}°C")
+        
+        # Humidity Control (informational - could control humidifiers)
+        humidity = data.get('humidity', 50)
+        if humidity < preset['humidity_range'][0]:
+            logger.warning(f"Humidity too low: {humidity}%")
+        elif humidity > preset['humidity_range'][1]:
+            logger.warning(f"Humidity too high: {humidity}%")
+        
+        # Update system status
+        self.system_status['last_update'] = datetime.now().isoformat()
+    
+    def _handle_disease_alert(self, result: Dict[str, Any]):
+        """Handle disease detection alerts"""
+        logger.warning(f"Disease detected: {result}")
+        
+        # Could implement:
+        # - Email/SMS notifications
+        # - Automatic quarantine procedures
+        # - Treatment recommendations
+    
+    def load_preset(self, plant_name: str) -> bool:
+        """Load a plant preset"""
+        try:
+            preset = self.preset_manager.load_preset(plant_name)
+            if preset:
+                self.current_preset = preset
+                logger.info(f"Loaded preset for {plant_name}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error loading preset for {plant_name}: {e}")
+            return False
+    
+    def _setup_routes(self):
+        """Setup Flask routes for web dashboard"""
+        
+        @self.app.route('/')
+        def dashboard():
+            return render_template('dashboard.html')
+        
+        @self.app.route('/api/sensor_data')
+        def get_sensor_data():
+            return jsonify(self.sensor_data)
+        
+        @self.app.route('/api/system_status')
+        def get_system_status():
+            return jsonify(self.system_status)
+        
+        @self.app.route('/api/load_preset', methods=['POST'])
+        def load_preset_api():
+            plant_name = request.json.get('plant_name')
+            success = self.load_preset(plant_name)
+            return jsonify({'success': success})
+        
+        @self.app.route('/api/control_actuator', methods=['POST'])
+        def control_actuator():
+            actuator = request.json.get('actuator')
+            action = request.json.get('action')
+            
+            try:
+                if actuator == 'pump':
+                    if action == 'on':
+                        self.actuator_controller.turn_on_pump()
+                    else:
+                        self.actuator_controller.turn_off_pump()
+                elif actuator == 'lights':
+                    if action == 'on':
+                        self.actuator_controller.turn_on_lights()
+                    else:
+                        self.actuator_controller.turn_off_lights()
+                
+                return jsonify({'success': True})
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+        
+        @self.app.route('/api/presets')
+        def get_presets():
+            presets = self.preset_manager.list_presets()
+            return jsonify(presets)
+
+def main():
+    """Main function"""
+    try:
+        controller = HydroponicsController()
+        
+        # Load default preset (lettuce)
+        controller.load_preset('lettuce')
+        
+        # Start the system
+        controller.start()
+        
+    except Exception as e:
+        logger.error(f"Failed to start system: {e}")
+        return 1
+    
+    return 0
+
+if __name__ == '__main__':
+    exit(main())
