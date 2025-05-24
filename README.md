@@ -204,19 +204,6 @@ python -m pytest tests/test_actuators.py
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
-
-- Sri Sairam Engineering College, Chennai
-- IEEE for publishing our research
-- ThingSpeak platform for IoT integration
-- OpenCV community for computer vision tools
-
-## 📞 Support
-
-For support and questions:
-- Create an [issue](https://github.com/yourusername/hydroponic-cultivation-system/issues)
-- Email: yashwanth.devadoss@gmail.com
-
 ## 🔮 Future Scope
 
 - [ ] Mobile application development
