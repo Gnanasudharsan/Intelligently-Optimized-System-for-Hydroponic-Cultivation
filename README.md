@@ -66,7 +66,7 @@ An automated hydroponic system that uses IoT sensors, machine learning, and comp
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/Gnanasudharsan/hydroponic-cultivation-system.git
+git clone https://github.com/Gnanasudharsan/Intelligently-Optimized-System-for-Hydroponic-Cultivation.git
 cd hydroponic-cultivation-system
 ```
 
@@ -91,57 +91,7 @@ cp config/config_template.py config/config.py
 python raspberry_pi/main.py
 ```
 
-## 📁 Project Structure
 
-```
-hydroponic-cultivation-system/
-│
-├── arduino/
-│   ├── hydroponic_sensors/
-│   │   └── hydroponic_sensors.ino
-│   ├── libraries.txt
-│   └── README.md
-│
-├── raspberry_pi/
-│   ├── main.py
-│   ├── sensor_reader.py
-│   ├── disease_detection.py
-│   ├── thingspeak_client.py
-│   ├── preset_manager.py
-│   └── actuator_controller.py
-│
-├── web_dashboard/
-│   ├── app.py
-│   ├── templates/
-│   ├── static/
-│   └── README.md
-│
-├── presets/
-│   ├── lettuce.json
-│   ├── tomato.json
-│   ├── spinach.json
-│   └── amaranthus.json
-│
-├── docs/
-│   ├── images/
-│   ├── fritzing/
-│   ├── installation_guide.md
-│   ├── api_documentation.md
-│   └── troubleshooting.md
-│
-├── config/
-│   ├── config_template.py
-│   └── thingspeak_config.json
-│
-├── tests/
-│   ├── test_sensors.py
-│   ├── test_disease_detection.py
-│   └── test_actuators.py
-│
-├── requirements.txt
-├── LICENSE
-└── README.md
-```
 
 ## 🎛️ Usage
 
