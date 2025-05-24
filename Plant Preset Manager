@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+"""
+Plant Preset Manager for Hydroponic System
+Manages growing presets for different plant types
+"""
+
+import json
+import os
+import logging
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+class PresetManager:
+    """Manager for plant growing presets"""
+    
+    def __init__(self, presets_directory: str = "presets/"):
+        """Initialize preset manager"""
+        self.presets_dir = presets_directory
+        self.presets_cache = {}
+        
+        # Create presets directory if it doesn't exist
+        os.makedirs(self.presets_dir, exist_ok=True)
+        
+        # Initialize with default presets
+        self._create_default_presets()
+        
+        logger.info(f"Preset manager initialized with directory: {self.presets_dir}")
+    
+    def _create_default_presets(self):
+        """Create default presets for common plants"""
+        
+        default_presets = {
+            "lettuce": {
+                "plant_name": "Lettuce",
+                "scientific_name": "Lactuca sativa",
+                "description": "Fast-growing leafy green, ideal for beginners",
+                "ph_range": [5.5, 6.5],
+                "ec_range": [0.8, 1.2],  # EC in mS/cm
+                "temperature_range": [18, 24],  # Celsius
+                "humidity_range": [50, 70],  # Percentage
+                "light_requirements": {
+                    "daily_hours": 14,
+                    "night_hours": 10,
+                    "intensity": "medium",
+                    "spectrum": ["blue", "red", "white"]
+                },
+                "growth_stages": {
+                    "seedling": {
+                        "duration_days": 7,
+                        "ec_range": [0.4, 0.8],
+                        "light_hours": 16
+                    },
+                    "vegetative": {
+                        "duration_days": 21,
+                        "ec_range": [0.8, 1.2],
+                        "light_hours": 14
+                    },
+                    "harvest": {
+                        "duration_days": 7,
+                        "ec_range": [0.6, 1.0],
+                        "light_hours": 12
+                    }
+                },
+                "harvest_time_days": 35,
+                "common_issues": [
+                    "Tip burn from high EC",
+                    "Bolting in high temperatures",
+                    "Root rot from poor oxygenation"
+                ],
+                "created_date": datetime.now().isoformat(),
+                "author": "System Default"
+            },
+            
+            "tomato": {
+                "plant_name": "Tomato",
+                "scientific_name": "Solanum lycopersicum",
+                "description": "Popular fruiting crop, requires more nutrients",
+                "ph_range": [6.0, 6.8],
+                "ec_range": [2.0, 3.5],
+                "temperature_range": [20, 28],
+                "humidity_range": [60, 80],
+                "light_requirements": {
+                    "daily_hours": 16,
+                    "night_hours": 8,
+                    "intensity": "high",
+                    "spectrum": ["red", "blue", "white", "far-red"]
+                },
+                "growth_stages": {
+                    "seedling": {
+                        "duration_days": 14,
+                        "ec_range": [0.8, 1.2],
+                        "light_hours": 18
+                    },
+                    "vegetative": {
+                        "duration_days": 35,
+                        "ec_range": [1.5, 2.5],
+                        "light_hours": 16
+                    },
+                    "flowering": {
+                        "duration_days": 21,
+                        "ec_range": [2.0, 3.0],
+                        "light_hours": 14
+                    },
+                    "fruiting": {
+                        "duration_days": 60,
+                        "ec_range": [2.5, 3.5],
+                        "light_hours": 14
+                    }
+                },
+                "harvest_time_days": 130,
+                "common_issues": [
+                    "Blossom end rot from calcium deficiency",
+                    "Leaf curl from high temperatures",
+                    "Powdery mildew in high humidity"
+                ],
+                "created_date": datetime.now().isoformat(),
+                "author": "System Default"
+            },
+            
+            "spinach": {
+                "plant_name": "Spinach",
+                "scientific_name": "Spinacia oleracea",
+                "description": "Nutrient-rich leafy green, cool weather crop",
+                "ph_range": [6.0, 7.0],
+                "ec_range": [1.2, 1.8],
+                "temperature_range": [15, 20],
+                "humidity_range": [40, 60],
+                "light_requirements": {
+                    "daily_hours": 12,
+                    "night_hours": 12,
+                    "intensity": "medium",
+                    "spectrum": ["blue", "red"]
+                },
+                "growth_stages": {
+                    "seedling": {
+                        "duration_days": 7,
+                        "ec_range": [0.6, 1.0],
+                        "light_hours": 14
+                    },
+                    "vegetative": {
+                        "duration_days": 28,
+                        "ec_range": [1.2, 1.8],
+                        "light_hours": 12
+                    }
+                },
+                "harvest_time_days": 35,
+                "common_issues": [
+                    "Bolting in warm temperatures",
+                    "Downy mildew in humid conditions",
+                    "Leaf miners"
+                ],
+                "created_date": datetime.now().isoformat(),
+                "author": "System Default"
+            },
+            
+            "amaranthus": {
+                "plant_name": "Amaranthus",
+                "scientific_name": "Amaranthus caudatus",
+                "description": "Research test plant with high protein content",
+                "ph_range": [6.0, 7.5],
+                "ec_range": [1.0, 2.0],
+                "temperature_range": [20, 30],
+                "humidity_range": [50, 70],
+                "light_requirements": {
+                    "daily_hours": 14,
+                    "night_hours": 10,
+                    "intensity": "medium-high",
+                    "spectrum": ["red", "blue", "white"]
+                },
+                "growth_stages": {
+                    "seedling": {
+                        "duration_days": 10,
+                        "ec_range": [0.5, 1.0],
+                        "light_hours": 16
+                    },
+                    "vegetative": {
+                        "duration_days": 30,
+                        "ec_range": [1.0, 1.5],
+                        "light_hours": 14
+                    },
+                    "flowering": {
+                        "duration_days": 45,
+                        "ec_range": [1.5, 2.0],
+                        "light_hours": 12
+                    }
+                },
+                "harvest_time_days": 85,
+                "common_issues": [
+                    "Leaf spot diseases",
+                    "Aphid infestations",
+                    "Stem rot in wet conditions"
+                ],
+                "disease_detection_notes": "Used in research for 85-87% accuracy testing",
+                "created_date": datetime.now().isoformat(),
+                "author": "Research Team"
+            },
+            
+            "basil": {
+                "plant_name": "Basil",
+                "scientific_name": "Ocimum basilicum",
+                "description": "Aromatic herb, popular for culinary use",
+                "ph_range": [5.5, 6.5],
+                "ec_range": [1.0, 1.6],
+                "temperature_range": [20, 25],
+                "humidity_range": [45, 65],
+                "light_requirements": {
+                    "daily_hours": 16,
+                    "night_hours": 8,
+                    "intensity": "medium-high",
+                    "spectrum": ["blue", "red", "white"]
+                },
+                "growth_stages": {
+                    "seedling": {
+                        "duration_days": 7,
+                        "ec_range": [0.6, 1.0],
+                        "light_hours": 18
+                    },
+                    "vegetative": {
+                        "duration_days": 35,
+                        "ec_range": [1.0, 1.6],
+                        "light_hours": 16
+                    }
+                },
+                "harvest_time_days": 42,
+                "common_issues": [
+                    "Fusarium wilt",
+                    "Aphids and whiteflies",
+                    "Leaf burn from intense light"
+                ],
+                "created_date": datetime.now().isoformat(),
+                "author": "System Default"
+            }
+        }
+        
+        # Save default presets to files
+        for preset_name, preset_data in default_presets.items():
+            preset_file = os.path.join(self.presets_dir, f"{preset_name}.json")
+            if not os.path.exists(preset_file):
+                self.save_preset(preset_name, preset_data)
+    
+    def load_preset(self, plant_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Load a preset for a specific plant
+        
+        Args:
+            plant_name: Name of the plant preset to load
+            
+        Returns:
+            Preset dictionary or None if not found
+        """
+        try:
+            # Check cache first
+            if plant_name in self.presets_cache:
+                return self.presets_cache[plant_name]
+            
+            # Load from file
+            preset_file = os.path.join(self.presets_dir, f"{plant_name.lower()}.json")
+            
+            if os.path.exists(preset_file):
+                with open(preset_file, 'r') as f:
+                    preset = json.load(f)
+                
+                # Cache the preset
+                self.presets_cache[plant_name] = preset
+                
+                logger.info(f"Loaded preset for {plant_name}")
+                return preset
+            else:
+                logger.warning(f"Preset file not found: {preset_file}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error loading preset for {plant_name}: {e}")
+            return None
+    
+    def save_preset(self, plant_name: str, preset_data: Dict[str, Any]) -> bool:
+        """
+        Save a preset to file
+        
+        Args:
+            plant_name: Name of the plant
+            preset_data: Preset configuration dictionary
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            preset_file = os.path.join(self.presets_dir, f"{plant_name.lower()}.json")
+            
+            # Add metadata
+            preset_data['last_modified'] = datetime.now().isoformat()
+            if 'created_date' not in preset_data:
+                preset_data['created_date'] = datetime.now().isoformat()
+            
+            # Validate preset data
+            if not self._validate_preset(preset_data):
+                logger.error(f"Invalid preset data for {plant_name}")
+                return False
+            
+            # Save to file
+            with open(preset_file, 'w') as f:
+                json.dump(preset_data, f, indent=4)
+            
+            # Update cache
+            self.presets_cache[plant_name] = preset_data
+            
+            logger.info(f"Saved preset for {plant_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving preset for {plant_name}: {e}")
+            return False
+    
+    def list_presets(self) -> List[str]:
+        """Get list of available preset names"""
+        try:
+            presets = []
+            for filename in os.listdir(self.presets_dir):
+                if filename.endswith('.json'):
+                    preset_name = filename[:-5]  # Remove .json extension
+                    presets.append(preset_name)
+            
+            return sorted(presets)
+            
+        except Exception as e:
+            logger.error(f"Error listing presets: {e}")
+            return []
+    
+    def get_preset_info(self, plant_name: str) -> Optional[Dict[str, Any]]:
+        """Get basic information about a preset without loading full data"""
+        try:
+            preset = self.load_preset(plant_name)
+            if preset:
+                return {
+                    'name': preset.get('plant_name', plant_name),
+                    'scientific_name': preset.get('scientific_name', ''),
+                    'description': preset.get('description', ''),
+                    'harvest_time_days': preset.get('harvest_time_days', 0),
+                    'created_date': preset.get('created_date', ''),
+                    'author': preset.get('author', '')
+                }
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting preset info for {plant_name}: {e}")
+            return None
+    
+    def delete_preset(self, plant_name: str) -> bool:
+        """Delete a preset file"""
+        try:
+            preset_file = os.path.join(self.presets_dir, f"{plant_name.lower()}.json")
+            
+            if os.path.exists(preset_file):
+                os.remove(preset_file)
+                
+                # Remove from cache
+                if plant_name in self.presets_cache:
+                    del self.presets_cache[plant_name]
+                
+                logger.info(f"Deleted preset for {plant_name}")
+                return True
+            else:
+                logger.warning(f"Preset file not found: {preset_file}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error deleting preset for {plant_name}: {e}")
+            return False
+    
+    def _validate_preset(self, preset_data: Dict[str, Any]) -> bool:
+        """Validate preset data structure"""
+        required_fields = [
+            'plant_name', 'ph_range', 'ec_range', 
+            'temperature_range', 'humidity_range'
+        ]
+        
+        for field in required_fields:
+            if field not in preset_data:
+                logger.error(f"Missing required field: {field}")
+                return False
+        
+        # Validate ranges
+        ranges_to_check = ['ph_range', 'ec_range', 'temperature_range', 'humidity_range']
+        for range_field in ranges_to_check:
+            if not isinstance(preset_data[range_field], list) or len(preset_data[range_field]) != 2:
+                logger.error(f"Invalid range format for {range_field}")
+                return False
+            
+            if preset_data[range_field][0] >= preset_data[range_field][1]:
+                logger.error(f"Invalid range values for {range_field}")
+                return False
+        
+        return True
+    
+    def get_optimal_values(self, plant_name: str) -> Optional[Dict[str, float]]:
+        """Get optimal values (midpoint of ranges) for a plant"""
+        try:
+            preset = self.load_preset(plant_name)
+            if not preset:
+                return None
+            
+            return {
+                'ph': sum(preset['ph_range']) / 2,
+                'ec': sum(preset['ec_range']) / 2,
+                'temperature': sum(preset['temperature_range']) / 2,
+                'humidity': sum(preset['humidity_range']) / 2
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting optimal values for {plant_name}: {e}")
+            return None
+    
+    def get_stage_parameters(self, plant_name: str, stage: str) -> Optional[Dict[str, Any]]:
+        """Get parameters for a specific growth stage"""
+        try:
+            preset = self.load_preset(plant_name)
+            if not preset:
+                return None
+            
+            growth_stages = preset.get('growth_stages', {})
+            return growth_stages.get(stage)
+            
+        except Exception as e:
+            logger.error(f"Error getting stage parameters for {plant_name}, stage {stage}: {e}")
+            return None
+    
+    def create_custom_preset(self, plant_name: str, base_preset: str = None) -> Dict[str, Any]:
+        """Create a custom preset, optionally based on an existing one"""
+        try:
+            if base_preset:
+                base_data = self.load_preset(base_preset)
+                if base_data:
+                    custom_preset = base_data.copy()
+                    custom_preset['plant_name'] = plant_name
+                    custom_preset['description'] = f"Custom preset based on {base_preset}"
+                    custom_preset['author'] = "Custom"
+                    custom_preset['created_date'] = datetime.now().isoformat()
+                    return custom_preset
+            
+            # Create minimal preset template
+            return {
+                'plant_name': plant_name,
+                'scientific_name': '',
+                'description': 'Custom hydroponic preset',
+                'ph_range': [6.0, 6.5],
+                'ec_range': [1.0, 1.5],
+                'temperature_range': [20, 25],
+                'humidity_range': [50, 70],
+                'light_requirements': {
+                    'daily_hours': 14,
+                    'night_hours': 10,
+                    'intensity': 'medium',
+                    'spectrum': ['red', 'blue', 'white']
+                },
+                'harvest_time_days': 60,
+                'common_issues': [],
+                'created_date': datetime.now().isoformat(),
+                'author': 'Custom'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating custom preset: {e}")
+            return {}
+    
+    def export_presets(self, output_file: str) -> bool:
+        """Export all presets to a single JSON file"""
+        try:
+            all_presets = {}
+            for preset_name in self.list_presets():
+                preset_data = self.load_preset(preset_name)
+                if preset_data:
+                    all_presets[preset_name] = preset_data
+            
+            with open(output_file, 'w') as f:
+                json.dump(all_presets, f, indent=4)
+            
+            logger.info(f"Exported {len(all_presets)} presets to {output_file}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error exporting presets: {e}")
+            return False
+    
+    def import_presets(self, input_file: str) -> bool:
+        """Import presets from a JSON file"""
+        try:
+            with open(input_file, 'r') as f:
+                imported_presets = json.load(f)
+            
+            success_count = 0
+            for preset_name, preset_data in imported_presets.items():
+                if self.save_preset(preset_name, preset_data):
+                    success_count += 1
+            
+            logger.info(f"Successfully imported {success_count}/{len(imported_presets)} presets")
+            return success_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error importing presets: {e}")
+            return False
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize preset manager
+    manager = PresetManager()
+    
+    # List available presets
+    print("Available presets:")
+    for preset in manager.list_presets():
+        info = manager.get_preset_info(preset)
+        print(f"- {preset}: {info['description'] if info else 'No description'}")
+    
+    # Load lettuce preset
+    lettuce_preset = manager.load_preset('lettuce')
+    if lettuce_preset:
+        print(f"\nLettuce preset loaded:")
+        print(f"pH range: {lettuce_preset['ph_range']}")
+        print(f"EC range: {lettuce_preset['ec_range']}")
+        print(f"Temperature range: {lettuce_preset['temperature_range']}")
+    
+    # Get optimal values
+    optimal = manager.get_optimal_values('lettuce')
+    if optimal:
+        print(f"\nOptimal values for lettuce: {optimal}")
