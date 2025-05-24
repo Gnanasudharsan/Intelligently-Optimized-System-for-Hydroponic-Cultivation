@@ -54,10 +54,6 @@ An automated hydroponic system that uses IoT sensors, machine learning, and comp
 - pH adjustment pumps
 - Nutrient dosing pumps
 
-## 📊 Circuit Diagram
-
-![Circuit Diagram](docs/fritzing/hydroponic_circuit.png)
-
 ## 🚀 Quick Start
 
 ### Prerequisites
