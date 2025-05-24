@@ -330,4 +330,31 @@ class ThingSpeakClient:
 if __name__ == "__main__":
     # Example configuration
     API_KEY = "YOUR_THINGSPEAK_API_KEY"
-    CHANNEL_ID = "YOUR_CHANNEL
+    CHANNEL_ID = "YOUR_CHANNEL_ID"
+    
+    # Initialize client
+    client = ThingSpeakClient(API_KEY, CHANNEL_ID)
+    
+    # Test sending data
+    test_data = {
+        'field1': 6.5,  # pH
+        'field2': 800,  # TDS
+        'field3': 22.5, # Temperature
+        'field4': 65    # Humidity
+    }
+    
+    print("Testing ThingSpeak connection...")
+    success = client.send_data(test_data)
+    print(f"Data send result: {'Success' if success else 'Failed'}")
+    
+    # Test retrieving data
+    print("\nRetrieving last entry...")
+    last_entry = client.get_last_entry()
+    if last_entry:
+        print(f"Last entry: {last_entry}")
+    
+    # Test analytics
+    print("\nCalculating analytics for pH (field1)...")
+    analytics = client.get_analytics(1)
+    if analytics:
+        print(f"pH Analytics: {analytics}")
