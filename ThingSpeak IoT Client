@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""
+ThingSpeak Client for Hydroponic System
+Handles IoT data logging and retrieval from ThingSpeak platform
+"""
+
+import requests
+import json
+import time
+import logging
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+class ThingSpeakClient:
+    """Client for ThingSpeak IoT platform integration"""
+    
+    def __init__(self, api_key: str, channel_id: str, read_api_key: str = None):
+        """
+        Initialize ThingSpeak client
+        
+        Args:
+            api_key: Write API key for the channel
+            channel_id: ThingSpeak channel ID
+            read_api_key: Read API key (if different from write key)
+        """
+        self.api_key = api_key
+        self.channel_id = channel_id
+        self.read_api_key = read_api_key or api_key
+        
+        self.base_url = "https://api.thingspeak.com"
+        self.update_url = f"{self.base_url}/update"
+        self.channel_url = f"{self.base_url}/channels/{channel_id}"
+        
+        # Rate limiting (ThingSpeak allows 1 update every 15 seconds)
+        self.min_update_interval = 15
+        self.last_update_time = 0
+        
+        logger.info(f"ThingSpeak client initialized for channel {channel_id}")
+    
+    def send_data(self, fields: Dict[str, float], metadata: Dict[str, Any] = None) -> bool:
+        """
+        Send sensor data to ThingSpeak
+        
+        Args:
+            fields: Dictionary mapping field names to values
+            metadata: Optional metadata to include
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Check rate limiting
+            current_time = time.time()
+            if current_time - self.last_update_time < self.min_update_interval:
+                time_to_wait = self.min_update_interval - (current_time - self.last_update_time)
+                logger.debug(f"Rate limiting: waiting {time_to_wait:.1f} seconds")
+                time.sleep(time_to_wait)
+            
+            # Prepare data payload
+            payload = {
+                'api_key': self.api_key
+            }
+            
+            # Add field data
+            for field_name, value in fields.items():
+                if isinstance(value, (int, float)) and not (
+                    value != value or  # NaN check
+                    value == float('inf') or 
+                    value == float('-inf')
+                ):
+                    payload[field_name] = value
+            
+            # Add metadata if provided
+            if metadata:
+                if 'status' in metadata:
+                    payload['status'] = str(metadata['status'])[:255]  # Limit to 255 chars
+                if 'latitude' in metadata and 'longitude' in metadata:
+                    payload['lat'] = metadata['latitude']
+                    payload['long'] = metadata['longitude']
+                if 'elevation' in metadata:
+                    payload['elevation'] = metadata['elevation']
+            
+            # Send data
+            response = requests.post(self.update_url, data=payload, timeout=10)
+            
+            if response.status_code == 200:
+                entry_id = response.text.strip()
+                if entry_id != '0':
+                    self.last_update_time = current_time
+                    logger.debug(f"Data sent successfully, entry ID: {entry_id}")
+                    return True
+                else:
+                    logger.error("ThingSpeak returned entry ID 0 (failed)")
+                    return False
+            else:
+                logger.error(f"HTTP error {response.status_code}: {response.text}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            logger.error("Timeout sending data to ThingSpeak")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error sending data to ThingSpeak: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending data to ThingSpeak: {e}")
+            return False
+    
+    def get_channel_data(self, num_results: int = 100, start_date: datetime = None, 
+                        end_date: datetime = None) -> Optional[List[Dict[str, Any]]]:
+        """
+        Retrieve channel data from ThingSpeak
+        
+        Args:
+            num_results: Number of results to retrieve (max 8000)
+            start_date: Start date for data retrieval
+            end_date: End date for data retrieval
+            
+        Returns:
+            List of data entries or None if error
+        """
+        try:
+            url = f"{self.channel_url}/feeds.json"
+            params = {
+                'api_key': self.read_api_key,
+                'results': min(num_results, 8000)
+            }
+            
+            if start_date:
+                params['start'] = start_date.isoformat()
+            if end_date:
+                params['end'] = end_date.isoformat()
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('feeds', [])
+            else:
+                logger.error(f"Error retrieving data: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error retrieving channel data: {e}")
+            return None
+    
+    def get_last_entry(self) -> Optional[Dict[str, Any]]:
+        """Get the last entry from the channel"""
+        try:
+            url = f"{self.channel_url}/feeds/last.json"
+            params = {'api_key': self.read_api_key}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Error retrieving last entry: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error retrieving last entry: {e}")
+            return None
+    
+    def get_channel_info(self) -> Optional[Dict[str, Any]]:
+        """Get channel information"""
+        try:
+            url = f"{self.channel_url}.json"
+            params = {'api_key': self.read_api_key}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Error retrieving channel info: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error retrieving channel info: {e}")
+            return None
+    
+    def get_field_data(self, field_id: int, num_results: int = 100) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get data for a specific field
+        
+        Args:
+            field_id: Field number (1-8)
+            num_results: Number of results to retrieve
+            
+        Returns:
+            List of field data entries
+        """
+        try:
+            url = f"{self.channel_url}/fields/{field_id}.json"
+            params = {
+                'api_key': self.read_api_key,
+                'results': min(num_results, 8000)
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('feeds', [])
+            else:
+                logger.error(f"Error retrieving field {field_id} data: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error retrieving field {field_id} data: {e}")
+            return None
+    
+    def clear_channel(self) -> bool:
+        """Clear all data from the channel"""
+        try:
+            url = f"{self.base_url}/channels/{self.channel_id}/feeds.json"
+            params = {'api_key': self.api_key}
+            
+            response = requests.delete(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info("Channel data cleared successfully")
+                return True
+            else:
+                logger.error(f"Error clearing channel: HTTP {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error clearing channel: {e}")
+            return False
+    
+    def send_sensor_data(self, ph: float, tds: float, temp: float, humidity: float, 
+                        solution_temp: float = None, light_level: float = None,
+                        pump_status: bool = None, system_status: str = None) -> bool:
+        """
+        Convenience method to send hydroponic sensor data
+        
+        Args:
+            ph: pH value
+            tds: TDS value in ppm
+            temp: Air temperature in Celsius
+            humidity: Relative humidity percentage
+            solution_temp: Solution temperature in Celsius
+            light_level: Light level (if measured)
+            pump_status: Pump on/off status
+            system_status: Overall system status message
+            
+        Returns:
+            True if successful
+        """
+        fields = {
+            'field1': ph,
+            'field2': tds,
+            'field3': temp,
+            'field4': humidity
+        }
+        
+        if solution_temp is not None:
+            fields['field5'] = solution_temp
+            
+        if light_level is not None:
+            fields['field6'] = light_level
+            
+        if pump_status is not None:
+            fields['field7'] = 1 if pump_status else 0
+        
+        metadata = {}
+        if system_status:
+            metadata['status'] = system_status
+        
+        return self.send_data(fields, metadata)
+    
+    def get_analytics(self, field_id: int, start_date: datetime = None, 
+                     end_date: datetime = None) -> Optional[Dict[str, float]]:
+        """
+        Get basic analytics for a field
+        
+        Args:
+            field_id: Field number to analyze
+            start_date: Start date for analysis
+            end_date: End date for analysis
+            
+        Returns:
+            Dictionary with min, max, average values
+        """
+        try:
+            # Default to last 24 hours if no dates provided
+            if not end_date:
+                end_date = datetime.now()
+            if not start_date:
+                start_date = end_date - timedelta(days=1)
+            
+            data = self.get_field_data(field_id, num_results=8000)
+            
+            if not data:
+                return None
+            
+            # Filter by date range
+            filtered_data = []
+            for entry in data:
+                entry_date = datetime.fromisoformat(entry['created_at'].replace('Z', '+00:00'))
+                if start_date <= entry_date <= end_date:
+                    field_key = f'field{field_id}'
+                    if entry.get(field_key) is not None:
+                        try:
+                            value = float(entry[field_key])
+                            filtered_data.append(value)
+                        except (ValueError, TypeError):
+                            continue
+            
+            if not filtered_data:
+                return None
+            
+            return {
+                'min': min(filtered_data),
+                'max': max(filtered_data),
+                'average': sum(filtered_data) / len(filtered_data),
+                'count': len(filtered_data),
+                'range': max(filtered_data) - min(filtered_data)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating analytics: {e}")
+            return None
+
+# Example usage and testing
+if __name__ == "__main__":
+    # Example configuration
+    API_KEY = "YOUR_THINGSPEAK_API_KEY"
+    CHANNEL_ID = "YOUR_CHANNEL
