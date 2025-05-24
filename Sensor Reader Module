@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""
+Sensor Reader Module for Hydroponic System
+Handles communication with Arduino for sensor data collection
+"""
+
+import serial
+import json
+import time
+import logging
+from typing import Dict, Any, Optional
+import threading
+
+logger = logging.getLogger(__name__)
+
+class SensorReader:
+    """Handles reading sensor data from Arduino"""
+    
+    def __init__(self, port: str = '/dev/ttyUSB0', baudrate: int = 9600, timeout: int = 5):
+        """
+        Initialize sensor reader
+        
+        Args:
+            port: Serial port for Arduino connection
+            baudrate: Communication baud rate
+            timeout: Serial communication timeout
+        """
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.serial_connection = None
+        self.is_connected = False
+        self.last_data = {}
+        self.data_lock = threading.Lock()
+        
+        # Connection retry settings
+        self.max_retries = 3
+        self.retry_delay = 2
+        
+        # Connect to Arduino
+        self.connect()
+    
+    def connect(self) -> bool:
+        """Establish serial connection with Arduino"""
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Attempting to connect to Arduino on {self.port} (attempt {attempt + 1})")
+                
+                self.serial_connection = serial.Serial(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    timeout=self.timeout,
+                    write_timeout=self.timeout
+                )
+                
+                # Wait for Arduino to initialize
+                time.sleep(2)
+                
+                # Test connection
+                if self._test_connection():
+                    self.is_connected = True
+                    logger.info("Successfully connected to Arduino")
+                    return True
+                else:
+                    self.serial_connection.close()
+                    raise Exception("Connection test failed")
+                    
+            except Exception as e:
+                logger.error(f"Connection attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.error("Failed to connect to Arduino after all attempts")
+                    self.is_connected = False
+                    return False
+        
+        return False
+    
+    def _test_connection(self) -> bool:
+        """Test the serial connection"""
+        try:
+            # Send status command
+            self.send_command("STATUS")
+            time.sleep(1)
+            
+            # Try to read response
+            response = self._read_line()
+            return response is not None
+            
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return False
+    
+    def read_sensors(self) -> Optional[Dict[str, float]]:
+        """
+        Read current sensor data from Arduino
+        
+        Returns:
+            Dictionary with sensor values or None if error
+        """
+        if not self.is_connected:
+            if not self.connect():
+                return None
+        
+        try:
+            # Clear any pending data
+            self.serial_connection.reset_input_buffer()
+            
+            # Wait for sensor data (Arduino sends data every 10 seconds)
+            data_received = False
+            start_time = time.time()
+            
+            while not data_received and (time.time() - start_time) < 15:
+                line = self._read_line()
+                if line:
+                    try:
+                        # Parse JSON data from Arduino
+                        sensor_data = json.loads(line)
+                        
+                        # Validate data
+                        if self._validate_sensor_data(sensor_data):
+                            with self.data_lock:
+                                self.last_data = sensor_data
+                            return sensor_data
+                        else:
+                            logger.warning(f"Invalid sensor data received: {sensor_data}")
+                            
+                    except json.JSONDecodeError:
+                        # Might be a status message, not sensor data
+                        logger.debug(f"Non-JSON data received: {line}")
+                        continue
+                
+                time.sleep(0.1)
+            
+            logger.warning("No valid sensor data received within timeout")
+            return self.last_data if self.last_data else None
+            
+        except Exception as e:
+            logger.error(f"Error reading sensors: {e}")
+            self.is_connected = False
+            return None
+    
+    def _read_line(self) -> Optional[str]:
+        """Read a line from the serial connection"""
+        try:
+            if self.serial_connection and self.serial_connection.in_waiting:
+                line = self.serial_connection.readline().decode('utf-8').strip()
+                return line if line else None
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error reading line: {e}")
+            return None
+    
+    def _validate_sensor_data(self, data: Dict[str, Any]) -> bool:
+        """Validate sensor data"""
+        required_fields = ['ph', 'tds', 'air_temp', 'humidity']
+        
+        # Check if all required fields are present
+        for field in required_fields:
+            if field not in data:
+                return False
+        
+        # Check if values are reasonable
+        ph = data.get('ph', 0)
+        if not (0 <= ph <= 14):
+            return False
+        
+        tds = data.get('tds', 0)
+        if not (0 <= tds <= 5000):
+            return False
+        
+        temp = data.get('air_temp', 0)
+        if not (-10 <= temp <= 50):
+            return False
+        
+        humidity = data.get('humidity', 0)
+        if not (0 <= humidity <= 100):
+            return False
+        
+        return True
+    
+    def send_command(self, command: str) -> bool:
+        """
+        Send a command to Arduino
+        
+        Args:
+            command: Command string to send
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected:
+            logger.error("Not connected to Arduino")
+            return False
+        
+        try:
+            command_with_newline = command + '\n'
+            self.serial_connection.write(command_with_newline.encode('utf-8'))
+            self.serial_connection.flush()
+            
+            logger.debug(f"Sent command: {command}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending command '{command}': {e}")
+            self.is_connected = False
+            return False
+    
+    def get_system_status(self) -> Optional[Dict[str, Any]]:
+        """Get system status from Arduino"""
+        if not self.send_command("STATUS"):
+            return None
+        
+        # Wait for response
+        time.sleep(1)
+        
+        try:
+            response = self._read_line()
+            if response:
+                return json.loads(response)
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON response for system status")
+        
+        return None
+    
+    def calibrate_ph(self) -> bool:
+        """Start pH sensor calibration process"""
+        return self.send_command("CALIBRATE_PH")
+    
+    def reset_arduino(self) -> bool:
+        """Reset Arduino system"""
+        return self.send_command("RESET")
+    
+    def get_last_data(self) -> Dict[str, float]:
+        """Get the last received sensor data"""
+        with self.data_lock:
+            return self.last_data.copy()
+    
+    def is_data_fresh(self, max_age_seconds: int = 30) -> bool:
+        """Check if the last data is fresh"""
+        if not self.last_data:
+            return False
+        
+        last_timestamp = self.last_data.get('timestamp', 0)
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        return (current_time - last_timestamp) < (max_age_seconds * 1000)
+    
+    def close(self):
+        """Close the serial connection"""
+        try:
+            if self.serial_connection and self.serial_connection.is_open:
+                self.serial_connection.close()
+                logger.info("Serial connection closed")
+        except Exception as e:
+            logger.error(f"Error closing serial connection: {e}")
+        finally:
+            self.is_connected = False
+    
+    def __del__(self):
+        """Destructor to ensure connection is closed"""
+        self.close()
+
+class SimulatedSensorReader(SensorReader):
+    """Simulated sensor reader for testing without hardware"""
+    
+    def __init__(self, *args, **kwargs):
+        """Initialize simulated sensor reader"""
+        self.is_connected = True
+        self.last_data = {}
+        self.data_lock = threading.Lock()
+        logger.info("Initialized simulated sensor reader")
+    
+    def connect(self) -> bool:
+        """Simulate connection"""
+        self.is_connected = True
+        return True
+    
+    def read_sensors(self) -> Optional[Dict[str, float]]:
+        """Generate simulated sensor data"""
+        import random
+        
+        # Generate realistic sensor values with some variation
+        base_time = time.time()
+        
+        simulated_data = {
+            'ph': 6.2 + random.uniform(-0.3, 0.3),
+            'tds': 850 + random.uniform(-50, 50),
+            'air_temp': 22.5 + random.uniform(-2, 2),
+            'humidity': 65 + random.uniform(-5, 5),
+            'solution_temp': 21.8 + random.uniform(-1, 1),
+            'thermocouple_temp': 22.1 + random.uniform(-1.5, 1.5),
+            'timestamp': int(base_time * 1000)
+        }
+        
+        # Add some realistic fluctuations
+        if hasattr(self, '_trend_counter'):
+            self._trend_counter += 1
+        else:
+            self._trend_counter = 0
+        
+        # Create slow trends
+        trend_factor = self._trend_counter * 0.01
+        simulated_data['ph'] += 0.1 * (trend_factor % 1.0 - 0.5)
+        simulated_data['tds'] += 10 * (trend_factor % 1.0 - 0.5)
+        
+        with self.data_lock:
+            self.last_data = simulated_data
+        
+        logger.debug(f"Generated simulated sensor data: {simulated_data}")
+        return simulated_data
+    
+    def send_command(self, command: str) -> bool:
+        """Simulate command sending"""
+        logger.info(f"Simulated command sent: {command}")
+        return True
+    
+    def get_system_status(self) -> Optional[Dict[str, Any]]:
+        """Generate simulated system status"""
+        return {
+            'status': 'running',
+            'pump': True,
+            'light': True,
+            'uptime': int(time.time() * 1000)
+        }
+
+# Example usage and testing
+if __name__ == "__main__":
+    import sys
+    
+    # Use simulated reader for testing
+    if len(sys.argv) > 1 and sys.argv[1] == '--simulate':
+        sensor_reader = SimulatedSensorReader()
+    else:
+        sensor_reader = SensorReader()
+    
+    if sensor_reader.is_connected:
+        print("Sensor reader connected successfully")
+        
+        # Test reading sensors
+        for i in range(5):
+            print(f"\n--- Reading {i+1} ---")
+            data = sensor_reader.read_sensors()
+            if data:
+                print(f"pH: {data.get('ph', 'N/A')}")
+                print(f"TDS: {data.get('tds', 'N/A')} ppm")
+                print(f"Temperature: {data.get('air_temp', 'N/A')} °C")
+                print(f"Humidity: {data.get('humidity', 'N/A')} %")
+            else:
+                print("Failed to read sensor data")
+            
+            time.sleep(2)
+        
+        # Test system status
+        print("\n--- System Status ---")
+        status = sensor_reader.get_system_status()
+        if status:
+            print(f"Status: {status}")
+        
+        sensor_reader.close()
+    else:
+        print("Failed to connect to sensor reader")
