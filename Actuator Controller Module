@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""
+Actuator Controller Module for Hydroponic System
+Controls pumps, lights, and other actuators via Arduino
+"""
+
+import logging
+import time
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
+import threading
+
+logger = logging.getLogger(__name__)
+
+class ActuatorController:
+    """Controls system actuators through Arduino"""
+    
+    def __init__(self, sensor_reader):
+        """
+        Initialize actuator controller
+        
+        Args:
+            sensor_reader: SensorReader instance for communication
+        """
+        self.sensor_reader = sensor_reader
+        self.actuator_states = {
+            'water_pump': False,
+            'grow_lights': False,
+            'ph_up_pump': False,
+            'ph_down_pump': False,
+            'nutrient_pump': False,
+            'exhaust_fan': False,
+            'circulation_fan': False
+        }
+        
+        # Timing control for pumps (prevent overuse)
+        self.pump_timers = {}
+        self.pump_limits = {
+            'ph_up_pump': {'max_duration': 5, 'cooldown': 300},  # 5s max, 5min cooldown
+            'ph_down_pump': {'max_duration': 5, 'cooldown': 300},
+            'nutrient_pump': {'max_duration': 10, 'cooldown': 600},  # 10s max, 10min cooldown
+            'water_pump': {'max_duration': 1800, 'cooldown': 300}  # 30min max, 5min cooldown
+        }
+        
+        # Light schedule
+        self.light_schedule = {
+            'enabled': False,
+            'on_time': '06:00',
+            'off_time': '20:00',
+            'duration_hours': 14
+        }
+        
+        self.control_lock = threading.Lock()
+        logger.info("Actuator controller initialized")
+    
+    def turn_on_pump(self) -> bool:
+        """Turn on water circulation pump"""
+        return self._control_actuator('water_pump', True, 'PUMP_ON')
+    
+    def turn_off_pump(self) -> bool:
+        """Turn off water circulation pump"""
+        return self._control_actuator('water_pump', False, 'PUMP_OFF')
+    
+    def turn_on_lights(self) -> bool:
+        """Turn on grow lights"""
+        return self._control_actuator('grow_lights', True, 'LIGHT_ON')
+    
+    def turn_off_lights(self) -> bool:
+        """Turn off grow lights"""
+        return self._control_actuator('grow_lights', False, 'LIGHT_OFF')
+    
+    def adjust_ph_up(self, duration: float = 1.0) -> bool:
+        """
+        Add pH up solution
+        
+        Args:
+            duration: Duration in seconds to run pump
+        """
+        if not self._can_run_pump('ph_up_pump', duration):
+            logger.warning("pH up pump cannot run due to safety limits")
+            return False
+        
+        success = self._control_timed_pump('ph_up_pump', 'PH_UP', duration)
+        if success:
+            self._record_pump_usage('ph_up_pump', duration)
+        return success
+    
+    def adjust_ph_down(self, duration: float = 1.0) -> bool:
+        """
+        Add pH down solution
+        
+        Args:
+            duration: Duration in seconds to run pump
+        """
+        if not self._can_run_pump('ph_down_pump', duration):
+            logger.warning("pH down pump cannot run due to safety limits")
+            return False
+        
+        success = self._control_timed_pump('ph_down_pump', 'PH_DOWN', duration)
+        if success:
+            self._record_pump_usage('ph_down_pump', duration)
+        return success
+    
+    def add_nutrients(self, duration: float = 2.0) -> bool:
+        """
+        Add nutrient solution
+        
+        Args:
+            duration: Duration in seconds to run pump
+        """
+        if not self._can_run_pump('nutrient_pump', duration):
+            logger.warning("Nutrient pump cannot run due to safety limits")
+            return False
+        
+        success = self._control_timed_pump('nutrient_pump', 'NUTRIENT_ON', duration)
+        if success:
+            self._record_pump_usage('nutrient_pump', duration)
+        return success
+    
+    def _control_actuator(self, actuator: str, state: bool, command: str) -> bool:
+        """Control an actuator and update state"""
+        with self.control_lock:
+            if self.sensor_reader.send_command(command):
+                self.actuator_states[actuator] = state
+                logger.info(f"{actuator} {'activated' if state else 'deactivated'}")
+                return True
+            else:
+                logger.error(f"Failed to control {actuator}")
+                return False
+    
+    def _control_timed_pump(self, pump: str, command: str, duration: float) -> bool:
+        """Control a pump for a specific duration"""
+        if self.sensor_reader.send_command(command):
+            logger.info(f"{pump} activated for {duration} seconds")
+            
+            # For safety, we rely on Arduino's built-in timing
+            # But we still record the usage
+            return True
+        else:
+            logger.error(f"Failed to activate {pump}")
+            return False
+    
+    def _can_run_pump(self, pump: str, duration: float) -> bool:
+        """Check if pump can run based on safety limits"""
+        if pump not in self.pump_limits:
+            return True
+        
+        limits = self.pump_limits[pump]
+        
+        # Check duration limit
+        if duration > limits['max_duration']:
+            logger.warning(f"{pump} duration {duration}s exceeds limit {limits['max_duration']}s")
+            return False
+        
+        # Check cooldown period
+        if pump in self.pump_timers:
+            last_run = self.pump_timers[pump]['last_run']
+            cooldown_end = last_run + timedelta(seconds=limits['cooldown'])
+            
+            if datetime.now() < cooldown_end:
+                remaining = (cooldown_end - datetime.now()).total_seconds()
+                logger.warning(f"{pump} in cooldown, {remaining:.0f}s remaining")
+                return False
+        
+        return True
+    
+    def _record_pump_usage(self, pump: str, duration: float):
+        """Record pump usage for safety tracking"""
+        self.pump_timers[pump] = {
+            'last_run': datetime.now(),
+            'duration': duration,
+            'total_runtime_today': self._get_daily_runtime(pump) + duration
+        }
+    
+    def _get_daily_runtime(self, pump: str) -> float:
+        """Get total runtime for pump today"""
+        if pump not in self.pump_timers:
+            return 0.0
+        
+        last_run = self.pump_timers[pump]['last_run']
+        if last_run.date() != datetime.now().date():
+            return 0.0  # Reset for new day
+        
+        return self.pump_timers[pump].get('total_runtime_today', 0.0)
+    
+    def set_light_schedule(self, on_time: str, off_time: str) -> bool:
+        """
+        Set automatic light schedule
+        
+        Args:
+            on_time: Time to turn lights on (HH:MM format)
+            off_time: Time to turn lights off (HH:MM format)
+        """
+        try:
+            # Validate time format
+            datetime.strptime(on_time, '%H:%M')
+            datetime.strptime(off_time, '%H:%M')
+            
+            self.light_schedule = {
+                'enabled': True,
+                'on_time': on_time,
+                'off_time': off_time
+            }
+            
+            logger.info(f"Light schedule set: ON at {on_time}, OFF at {off_time}")
+            return True
+            
+        except ValueError:
+            logger.error("Invalid time format. Use HH:MM")
+            return False
+    
+    def check_light_schedule(self):
+        """Check and execute light schedule"""
+        if not self.light_schedule['enabled']:
+            return
+        
+        current_time = datetime.now().strftime('%H:%M')
+        on_time = self.light_schedule['on_time']
+        off_time = self.light_schedule['off_time']
+        
+        if current_time == on_time and not self.actuator_states['grow_lights']:
+            logger.info("Automatic light schedule: turning lights ON")
+            self.turn_on_lights()
+        elif current_time == off_time and self.actuator_states['grow_lights']:
+            logger.info("Automatic light schedule: turning lights OFF")
+            self.turn_off_lights()
+    
+    def get_actuator_states(self) -> Dict[str, bool]:
+        """Get current state of all actuators"""
+        return self.actuator_states.copy()
+    
+    def get_pump_status(self) -> Dict[str, Dict[str, Any]]:
+        """Get detailed pump status and usage"""
+        status = {}
+        
+        for pump in self.pump_limits.keys():
+            pump_info = {
+                'can_run': True,
+                'daily_runtime': self._get_daily_runtime(pump),
+                'last_run': None,
+                'cooldown_remaining': 0
+            }
+            
+            if pump in self.pump_timers:
+                timer_info = self.pump_timers[pump]
+                pump_info['last_run'] = timer_info['last_run'].isoformat()
+                
+                # Calculate cooldown remaining
+                limits = self.pump_limits[pump]
+                cooldown_end = timer_info['last_run'] + timedelta(seconds=limits['cooldown'])
+                
+                if datetime.now() < cooldown_end:
+                    pump_info['cooldown_remaining'] = (cooldown_end - datetime.now()).total_seconds()
+                    pump_info['can_run'] = False
+            
+            status[pump] = pump_info
+        
+        return status
+    
+    def turn_off_all(self) -> bool:
+        """Emergency function to turn off all actuators"""
+        logger.warning("Emergency shutdown: turning off all actuators")
+        
+        success = True
+        
+        # Turn off all actuators
+        commands = [
+            ('water_pump', 'PUMP_OFF'),
+            ('grow_lights', 'LIGHT_OFF')
+        ]
+        
+        for actuator, command in commands:
+            if not self._control_actuator(actuator, False, command):
+                success = False
+        
+        # Send reset command to Arduino
+        if not self.sensor_reader.send_command("RESET"):
+            success = False
+        
+        return success
+    
+    def auto_control_ph(self, current_ph: float, target_range: tuple, 
+                       tolerance: float = 0.1) -> bool:
+        """
+        Automatically control pH based on current reading
+        
+        Args:
+            current_ph: Current pH reading
+            target_range: Tuple of (min_ph, max_ph)
+            tolerance: pH tolerance before adjustment
+        """
+        min_ph, max_ph = target_range
+        
+        if current_ph < min_ph - tolerance:
+            # pH too low, add pH up solution
+            adjustment_duration = min(2.0, abs(current_ph - min_ph) * 0.5)
+            logger.info(f"pH too low ({current_ph:.2f}), adding pH up for {adjustment_duration:.1f}s")
+            return self.adjust_ph_up(adjustment_duration)
+            
+        elif current_ph > max_ph + tolerance:
+            # pH too high, add pH down solution
+            adjustment_duration = min(2.0, abs(current_ph - max_ph) * 0.5)
+            logger.info(f"pH too high ({current_ph:.2f}), adding pH down for {adjustment_duration:.1f}s")
+            return self.adjust_ph_down(adjustment_duration)
+        
+        return True  # pH is within acceptable range
+    
+    def auto_control_nutrients(self, current_tds: float, target_range: tuple) -> bool:
+        """
+        Automatically control nutrient levels based on TDS reading
+        
+        Args:
+            current_tds: Current TDS reading in ppm
+            target_range: Tuple of (min_tds, max_tds) in ppm
+        """
+        min_tds, max_tds = target_range
+        
+        if current_tds < min_tds:
+            # TDS too low, add nutrients
+            deficiency = min_tds - current_tds
+            adjustment_duration = min(5.0, deficiency / 100.0)  # Scale based on deficiency
+            logger.info(f"TDS too low ({current_tds:.0f}ppm), adding nutrients for {adjustment_duration:.1f}s")
+            return self.add_nutrients(adjustment_duration)
+        
+        return True  # TDS is acceptable
+    
+    def perform_maintenance_cycle(self) -> bool:
+        """Perform a maintenance cycle (circulation, etc.)"""
+        logger.info("Starting maintenance cycle")
+        
+        success = True
+        
+        # Run circulation pump for 5 minutes
+        if self.turn_on_pump():
+            time.sleep(300)  # 5 minutes
+            if not self.turn_off_pump():
+                success = False
+        else:
+            success = False
+        
+        # Brief nutrient circulation
+        if success:
+            if not self.add_nutrients(3.0):
+                success = False
+        
+        logger.info(f"Maintenance cycle {'completed' if success else 'failed'}")
+        return success
+
+class SimulatedActuatorController(ActuatorController):
+    """Simulated actuator controller for testing"""
+    
+    def __init__(self, sensor_reader):
+        super().__init__(sensor_reader)
+        logger.info("Initialized simulated actuator controller")
+    
+    def _control_actuator(self, actuator: str, state: bool, command: str) -> bool:
+        """Simulate actuator control"""
+        with self.control_lock:
+            self.actuator_states[actuator] = state
+            logger.info(f"SIMULATED: {actuator} {'activated' if state else 'deactivated'}")
+            return True
+    
+    def _control_timed_pump(self, pump: str, command: str, duration: float) -> bool:
+        """Simulate timed pump control"""
+        logger.info(f"SIMULATED: {pump} activated for {duration} seconds")
+        return True
+
+# Example usage
+if __name__ == "__main__":
+    from sensor_reader import SimulatedSensorReader
+    
+    # Create simulated components for testing
+    sensor_reader = SimulatedSensorReader()
+    actuator_controller = SimulatedActuatorController(sensor_reader)
+    
+    # Test basic controls
+    print("Testing actuator controller...")
+    
+    print("\n1. Testing pump control:")
+    actuator_controller.turn_on_pump()
+    time.sleep(1)
+    actuator_controller.turn_off_pump()
+    
+    print("\n2. Testing light control:")
+    actuator_controller.turn_on_lights()
+    time.sleep(1)
+    actuator_controller.turn_off_lights()
+    
+    print("\n3. Testing pH adjustment:")
+    actuator_controller.adjust_ph_up(1.0)
+    time.sleep(1)
+    actuator_controller.adjust_ph_down(1.0)
+    
+    print("\n4. Testing nutrient addition:")
+    actuator_controller.add_nutrients(2.0)
+    
+    print("\n5. Current actuator states:")
+    states = actuator_controller.get_actuator_states()
+    for actuator, state in states.items():
+        print(f"  {actuator}: {'ON' if state else 'OFF'}")
+    
+    print("\n6. Pump status:")
+    pump_status = actuator_controller.get_pump_status()
+    for pump, status in pump_status.items():
+        print(f"  {pump}: Can run: {status['can_run']}, Daily runtime: {status['daily_runtime']:.1f}s")
+    
+    print("\nTesting completed!")
