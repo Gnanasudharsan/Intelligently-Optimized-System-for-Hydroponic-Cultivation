@@ -70,7 +70,7 @@ An automated hydroponic system that uses IoT sensors, machine learning, and comp
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/hydroponic-cultivation-system.git
+git clone https://github.com/Gnanasudharsan/hydroponic-cultivation-system.git
 cd hydroponic-cultivation-system
 ```
 
