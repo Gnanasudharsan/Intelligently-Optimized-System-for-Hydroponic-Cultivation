@@ -1,0 +1,307 @@
+/*
+ * Hydroponic Cultivation System - Arduino Sensor Controller
+ * 
+ * This code reads data from multiple sensors:
+ * - pH Sensor (Gravity Analog)
+ * - TDS Sensor
+ * - DHT11 (Temperature & Humidity)
+ * - MAX6675 (Thermocouple)
+ * 
+ * Data is sent to Raspberry Pi via Serial communication
+ */
+
+#include <DHT.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <SoftwareSerial.h>
+#include "max6675.h"
+
+// Pin Definitions
+#define PH_PIN A0           // pH sensor analog pin
+#define TDS_PIN A1          // TDS sensor analog pin
+#define DHT_PIN 2           // DHT11 data pin
+#define DHT_TYPE DHT11      // DHT sensor type
+#define TEMP_SENSOR_PIN 3   // DS18B20 temperature sensor
+#define MAX6675_CS 4        // MAX6675 chip select
+#define MAX6675_CLK 5       // MAX6675 clock
+#define MAX6675_DO 6        // MAX6675 data out
+
+// Actuator Pins
+#define PUMP_PIN 7          // Water pump relay
+#define LED_PIN 8           // Grow light relay
+#define PH_UP_PUMP 9        // pH up solution pump
+#define PH_DOWN_PUMP 10     // pH down solution pump
+#define NUTRIENT_PUMP 11    // Nutrient solution pump
+
+// Sensor Objects
+DHT dht(DHT_PIN, DHT_TYPE);
+OneWire oneWire(TEMP_SENSOR_PIN);
+DallasTemperature tempSensor(&oneWire);
+MAX6675 thermocouple(MAX6675_CLK, MAX6675_CS, MAX6675_DO);
+
+// Calibration constants
+#define PH_NEUTRAL 7.0
+#define PH_ACID_VOLTAGE 2032.44
+#define PH_NEUTRAL_VOLTAGE 1500.0
+#define TDS_CONVERSION_FACTOR 0.5
+#define TEMPERATURE_COMPENSATION 25.0
+
+// Global variables
+float phValue = 0;
+float tdsValue = 0;
+float airTemp = 0;
+float airHumidity = 0;
+float solutionTemp = 0;
+float thermocoupleTemp = 0;
+
+// Timing variables
+unsigned long lastSensorRead = 0;
+unsigned long lastDataSend = 0;
+const unsigned long SENSOR_INTERVAL = 2000;  // Read sensors every 2 seconds
+const unsigned long DATA_SEND_INTERVAL = 10000;  // Send data every 10 seconds
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Initialize sensors
+  dht.begin();
+  tempSensor.begin();
+  
+  // Initialize actuator pins
+  pinMode(PUMP_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(PH_UP_PUMP, OUTPUT);
+  pinMode(PH_DOWN_PUMP, OUTPUT);
+  pinMode(NUTRIENT_PUMP, OUTPUT);
+  
+  // Set initial actuator states
+  digitalWrite(PUMP_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(PH_UP_PUMP, LOW);
+  digitalWrite(PH_DOWN_PUMP, LOW);
+  digitalWrite(NUTRIENT_PUMP, LOW);
+  
+  Serial.println("Hydroponic System Initialized");
+  Serial.println("Sensor readings starting...");
+  
+  delay(2000); // Allow sensors to stabilize
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // Read sensors at specified interval
+  if (currentTime - lastSensorRead >= SENSOR_INTERVAL) {
+    readAllSensors();
+    lastSensorRead = currentTime;
+  }
+  
+  // Send data at specified interval
+  if (currentTime - lastDataSend >= DATA_SEND_INTERVAL) {
+    sendSensorData();
+    lastDataSend = currentTime;
+  }
+  
+  // Check for commands from Raspberry Pi
+  checkForCommands();
+  
+  delay(100);
+}
+
+void readAllSensors() {
+  // Read pH sensor
+  phValue = readPH();
+  
+  // Read TDS sensor
+  tdsValue = readTDS();
+  
+  // Read DHT11 sensor
+  airTemp = dht.readTemperature();
+  airHumidity = dht.readHumidity();
+  
+  // Read DS18B20 temperature sensor
+  tempSensor.requestTemperatures();
+  solutionTemp = tempSensor.getTempCByIndex(0);
+  
+  // Read MAX6675 thermocouple
+  thermocoupleTemp = thermocouple.readCelsius();
+  
+  // Validate readings
+  if (isnan(airTemp) || isnan(airHumidity)) {
+    Serial.println("Failed to read from DHT sensor!");
+    airTemp = -999;
+    airHumidity = -999;
+  }
+  
+  if (solutionTemp == DEVICE_DISCONNECTED_C) {
+    Serial.println("Temperature sensor disconnected!");
+    solutionTemp = -999;
+  }
+}
+
+float readPH() {
+  int sensorValue = 0;
+  for (int i = 0; i < 10; i++) {
+    sensorValue += analogRead(PH_PIN);
+    delay(10);
+  }
+  
+  float avgValue = sensorValue / 10.0;
+  float voltage = (avgValue * 5.0) / 1024.0;
+  
+  // Convert voltage to pH using calibration
+  float ph = PH_NEUTRAL + ((PH_NEUTRAL_VOLTAGE - voltage * 1000) / 
+            (PH_ACID_VOLTAGE - PH_NEUTRAL_VOLTAGE) * (PH_NEUTRAL - 4.0));
+  
+  return ph;
+}
+
+float readTDS() {
+  int sensorValue = 0;
+  for (int i = 0; i < 10; i++) {
+    sensorValue += analogRead(TDS_PIN);
+    delay(10);
+  }
+  
+  float avgValue = sensorValue / 10.0;
+  float voltage = (avgValue * 5.0) / 1024.0;
+  
+  // Temperature compensation
+  float compensationCoefficient = 1.0 + 0.02 * (airTemp - TEMPERATURE_COMPENSATION);
+  float compensationVoltage = voltage / compensationCoefficient;
+  
+  // Convert voltage to TDS
+  float tds = (133.42 * compensationVoltage * compensationVoltage * compensationVoltage 
+              - 255.86 * compensationVoltage * compensationVoltage 
+              + 857.39 * compensationVoltage) * TDS_CONVERSION_FACTOR;
+  
+  return tds;
+}
+
+void sendSensorData() {
+  // Create JSON formatted data
+  Serial.print("{");
+  Serial.print("\"ph\":");
+  Serial.print(phValue, 2);
+  Serial.print(",\"tds\":");
+  Serial.print(tdsValue, 2);
+  Serial.print(",\"air_temp\":");
+  Serial.print(airTemp, 2);
+  Serial.print(",\"humidity\":");
+  Serial.print(airHumidity, 2);
+  Serial.print(",\"solution_temp\":");
+  Serial.print(solutionTemp, 2);
+  Serial.print(",\"thermocouple_temp\":");
+  Serial.print(thermocoupleTemp, 2);
+  Serial.print(",\"timestamp\":");
+  Serial.print(millis());
+  Serial.println("}");
+}
+
+void checkForCommands() {
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    
+    if (command.startsWith("PUMP_")) {
+      controlPump(command);
+    } else if (command.startsWith("LIGHT_")) {
+      controlLight(command);
+    } else if (command.startsWith("PH_")) {
+      controlPH(command);
+    } else if (command.equals("STATUS")) {
+      sendSystemStatus();
+    } else if (command.equals("CALIBRATE_PH")) {
+      calibratePH();
+    } else if (command.equals("RESET")) {
+      resetSystem();
+    }
+  }
+}
+
+void controlPump(String command) {
+  if (command.equals("PUMP_ON")) {
+    digitalWrite(PUMP_PIN, HIGH);
+    Serial.println("Water pump ON");
+  } else if (command.equals("PUMP_OFF")) {
+    digitalWrite(PUMP_PIN, LOW);
+    Serial.println("Water pump OFF");
+  }
+}
+
+void controlLight(String command) {
+  if (command.equals("LIGHT_ON")) {
+    digitalWrite(LED_PIN, HIGH);
+    Serial.println("Grow lights ON");
+  } else if (command.equals("LIGHT_OFF")) {
+    digitalWrite(LED_PIN, LOW);
+    Serial.println("Grow lights OFF");
+  }
+}
+
+void controlPH(String command) {
+  if (command.equals("PH_UP")) {
+    digitalWrite(PH_UP_PUMP, HIGH);
+    delay(1000); // Run for 1 second
+    digitalWrite(PH_UP_PUMP, LOW);
+    Serial.println("pH UP solution added");
+  } else if (command.equals("PH_DOWN")) {
+    digitalWrite(PH_DOWN_PUMP, HIGH);
+    delay(1000); // Run for 1 second
+    digitalWrite(PH_DOWN_PUMP, LOW);
+    Serial.println("pH DOWN solution added");
+  }
+}
+
+void sendSystemStatus() {
+  Serial.print("{\"status\":\"running\",");
+  Serial.print("\"pump\":");
+  Serial.print(digitalRead(PUMP_PIN) ? "true" : "false");
+  Serial.print(",\"light\":");
+  Serial.print(digitalRead(LED_PIN) ? "true" : "false");
+  Serial.print(",\"uptime\":");
+  Serial.print(millis());
+  Serial.println("}");
+}
+
+void calibratePH() {
+  Serial.println("Starting pH calibration...");
+  Serial.println("Place pH probe in pH 7.0 buffer solution");
+  Serial.println("Send 'CAL_7' when ready");
+  
+  // Wait for calibration commands
+  // This is a simplified calibration routine
+  // In practice, you would store calibration values in EEPROM
+}
+
+void resetSystem() {
+  // Turn off all actuators
+  digitalWrite(PUMP_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(PH_UP_PUMP, LOW);
+  digitalWrite(PH_DOWN_PUMP, LOW);
+  digitalWrite(NUTRIENT_PUMP, LOW);
+  
+  Serial.println("System reset complete");
+}
+
+// Utility functions
+void printSensorValues() {
+  Serial.println("=== Sensor Readings ===");
+  Serial.print("pH: "); Serial.println(phValue, 2);
+  Serial.print("TDS: "); Serial.print(tdsValue, 2); Serial.println(" ppm");
+  Serial.print("Air Temp: "); Serial.print(airTemp, 2); Serial.println(" °C");
+  Serial.print("Humidity: "); Serial.print(airHumidity, 2); Serial.println(" %");
+  Serial.print("Solution Temp: "); Serial.print(solutionTemp, 2); Serial.println(" °C");
+  Serial.print("Thermocouple: "); Serial.print(thermocoupleTemp, 2); Serial.println(" °C");
+  Serial.println("=======================");
+}
+
+// Error handling
+void handleSensorError(String sensorName, float value) {
+  if (isnan(value) || value < -900) {
+    Serial.print("ERROR: ");
+    Serial.print(sensorName);
+    Serial.println(" sensor malfunction");
+  }
+}
